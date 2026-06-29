@@ -15,6 +15,34 @@ streamlit run app.py
 
 ---
 
+## 🔑 API Key Setup (optional shared key)
+
+By default, every visitor pastes their own free Groq key (from
+[console.groq.com/keys](https://console.groq.com/keys)) into the sidebar box
+to unlock AI features. If you want a **default key built into your own
+deployment** (so AI features work out of the box, while still letting
+visitors override it with their own key), set it up like this:
+
+1. Copy `.streamlit/secrets.toml.example` → `.streamlit/secrets.toml`
+2. Open it and replace the placeholder with your real key:
+   ```toml
+   GROQ_API_KEY = "gsk_your_real_key_here"
+   ```
+3. Run the app — the AI features now work automatically, and the sidebar
+   shows "✓ Using app's shared key".
+
+`secrets.toml` is listed in `.gitignore`, so it's never committed or pushed —
+your key stays out of the source code.
+
+Anyone who types their **own** key into the sidebar/MST box always uses
+*that* key instead, regardless of the default.
+
+**On Streamlit Community Cloud:** skip the file entirely — paste the same
+`GROQ_API_KEY = "..."` line into your app's **Settings → Secrets** box in the
+dashboard, which works the same way.
+
+---
+
 ## 📂 What to Upload
 
 | Module | File type | Minimum columns needed |

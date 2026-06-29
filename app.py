@@ -19,6 +19,7 @@ from core.config import configure_page
 from core.styling import inject_css
 from core.ui_components import render_html
 from core.auth import init_auth_state, is_logged_in, inject_login_css, render_login_page
+from core.secrets_helper import resolve_api_key, has_default_key
 
 # ── Auth state must exist before anything else ─────────────────────────
 init_auth_state()
@@ -235,13 +236,19 @@ def render_mst_section():
 
         if active_files:
             st.markdown("### 🔑 Groq API Key")
-            xai_key = st.text_input(
-                "API Key", type="password", placeholder="gsk_… (optional)",
-                help="Free at console.groq.com/keys — unlocks AI insights & compare AI command bar.",
+            _typed_key = st.text_input(
+                "API Key", type="password",
+                placeholder="gsk_… (optional)" if has_default_key() else "gsk_…",
+                help="Free at console.groq.com/keys — unlocks AI insights & compare AI command bar. "
+                     "Leave blank to use this app's shared key, if one is configured.",
                 label_visibility="collapsed", key="mst_xai_key"
             )
-            if xai_key:
-                st.markdown('<div style="font-size:0.7rem;color:#10b981;">✓ AI features unlocked</div>',
+            xai_key = resolve_api_key(_typed_key)
+            if _typed_key:
+                st.markdown('<div style="font-size:0.7rem;color:#10b981;">✓ Using your own key</div>',
+                            unsafe_allow_html=True)
+            elif xai_key:
+                st.markdown('<div style="font-size:0.7rem;color:#10b981;">✓ Using app\'s shared key</div>',
                             unsafe_allow_html=True)
             else:
                 st.markdown('<div style="font-size:0.7rem;color:#78716c;">Enter key for AI features</div>',

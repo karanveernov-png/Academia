@@ -5,6 +5,7 @@ Returns exam uploads, fee upload, attendance upload + display settings.
 import streamlit as st
 from core.ui_components import render_html
 from core.auth import logout
+from core.secrets_helper import resolve_api_key, has_default_key
 
 
 def sidebar():
@@ -32,13 +33,19 @@ def sidebar():
 
         # ── API Key ──────────────────────────────────────────────────────
         st.markdown("### 🔑 Groq API Key")
-        xai_key = st.text_input(
-            "API Key", type="password", placeholder="gsk_…",
-            help="Free key at console.groq.com/keys — unlocks AI insights & command bar.",
+        _typed_key = st.text_input(
+            "API Key", type="password",
+            placeholder="gsk_… (optional)" if has_default_key() else "gsk_…",
+            help="Free key at console.groq.com/keys — unlocks AI insights & command bar. "
+                 "Leave blank to use this app's shared key, if one is configured.",
             label_visibility="collapsed"
         )
-        if xai_key:
-            st.markdown('<div style="font-size:0.7rem;color:#10b981;">✓ AI features unlocked</div>',
+        xai_key = resolve_api_key(_typed_key)
+        if _typed_key:
+            st.markdown('<div style="font-size:0.7rem;color:#10b981;">✓ Using your own key</div>',
+                        unsafe_allow_html=True)
+        elif xai_key:
+            st.markdown('<div style="font-size:0.7rem;color:#10b981;">✓ Using app\'s shared key</div>',
                         unsafe_allow_html=True)
         else:
             st.markdown('<div style="font-size:0.7rem;color:#78716c;">Enter key to unlock AI features</div>',

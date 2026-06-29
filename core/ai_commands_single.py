@@ -7,6 +7,7 @@ filters), an AI fallback parser via Groq for anything more open-ended,
 and the executor that turns a parsed command into a chart/table/text.
 """
 import json
+import re as _re
 import textwrap
 import pandas as pd
 import numpy as np
