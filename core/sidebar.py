@@ -13,9 +13,9 @@ def sidebar():
         render_html("""
         <div class="sidebar-logo">
             <span class="sidebar-logo-icon">🎓</span>
-            <div class="sidebar-logo-title">Student Intelligence Portal</div>
+            <div class="sidebar-logo-title">Studora</div>
             <div class="sidebar-logo-sub">Exam · Attendance · Fee</div>
-            <div><span class="sidebar-badge">⚡ Groq AI Powered</span></div>
+            <div><span class="sidebar-badge">⚡ Studora AI</span></div>
         </div>
         """)
 
@@ -129,7 +129,7 @@ def sidebar():
         st.divider()
         st.markdown(
             '<div style="font-size:0.65rem;color:#44403c;text-align:center;">'
-            'Student Intelligence Portal v3.0<br>'
+            'Studora v4.0<br>'
             '<span style="color:#292524;">Streamlit · Groq · Plotly</span></div>',
             unsafe_allow_html=True
         )

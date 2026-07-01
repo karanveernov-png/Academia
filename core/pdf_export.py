@@ -172,7 +172,7 @@ def generate_pdf(df: pd.DataFrame, kpis: dict, insights: str, exam_label: str, m
 
     # ── Cover / Title block ──
     story.append(Spacer(1, 18))
-    story.append(Paragraph("🎓 AI Student Intelligence Dashboard", title_style))
+    story.append(Paragraph("🎓 Studora Dashboard", title_style))
     story.append(Paragraph(f"Performance Report — {exam_label}", subtitle_style))
     story.append(Paragraph(f"Generated on {datetime.now().strftime('%d %B %Y, %I:%M %p')}", meta_style))
     story.append(Spacer(1, 10))
@@ -251,16 +251,62 @@ def generate_pdf(df: pd.DataFrame, kpis: dict, insights: str, exam_label: str, m
             story.append(subj_img)
             story.append(Spacer(1, 10))
 
-    top_img = _fig_to_pdf_image(chart_top_n_students(df, min(10, len(df))), width=6.3*inch, height=3.0*inch, show_title=False)
+    top_img = _fig_to_pdf_image(
+        chart_top_n_students(df, min(10, len(df))),
+        width=6.3*inch, height=3.4*inch,
+        show_title=False,
+        margin=dict(l=160, r=20, t=24, b=50),
+    )
     if top_img:
         story.append(Paragraph("Top Performers", h1))
         story.append(top_img)
         story.append(Spacer(1, 10))
 
-    # ── AI Insights ──
+    # ── AI Insights — parse markdown into clean ReportLab paragraphs ──
     if insights and "Enter your Groq" not in insights and "❌ Groq" not in insights:
         story.append(Paragraph("AI-Powered Insights (Groq LLaMA 8B)", h1))
-        story.append(Paragraph(insights.replace("\n","<br/>"), body))
+        story.append(Spacer(1, 4))
+
+        # ReportLab doesn't understand markdown. Convert the common patterns
+        # the LLM produces (**bold**, ### headers, bullet lines) into proper
+        # styled Paragraphs so the PDF looks clean.
+        bullet_style = ParagraphStyle(
+            "Bullet", parent=styles["Normal"],
+            fontSize=10, leading=15, textColor=colors.HexColor("#1e293b"),
+            leftIndent=14, firstLineIndent=-10, spaceBefore=3,
+        )
+        section_style = ParagraphStyle(
+            "InsightSection", parent=styles["Normal"],
+            fontSize=11, leading=14, textColor=colors.HexColor("#4f46e5"),
+            fontName="Helvetica-Bold", spaceBefore=8, spaceAfter=2,
+        )
+        import re as _re
+
+        def _md_to_rl(text: str) -> str:
+            """Convert inline markdown to ReportLab XML tags."""
+            # **bold** → <b>bold</b>
+            text = _re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
+            # *italic* → <i>italic</i>
+            text = _re.sub(r"\*(.+?)\*", r"<i>\1</i>", text)
+            # strip stray leading #, *, - markers already handled per-line
+            return text
+
+        for raw_line in insights.splitlines():
+            line = raw_line.strip()
+            if not line:
+                story.append(Spacer(1, 4))
+                continue
+            # Heading lines: ## or ### prefix, or lines that look like **📋 Title**
+            if _re.match(r"^#{1,3}\s+", line) or _re.match(r"^\*\*[^\*]+\*\*\s*$", line):
+                clean = _re.sub(r"^#+\s+", "", line)
+                clean = _re.sub(r"\*\*(.+?)\*\*", r"\1", clean).strip()
+                story.append(Paragraph(clean, section_style))
+            # Bullet lines: - or * or numbered
+            elif _re.match(r"^[-*•]\s+", line) or _re.match(r"^\d+\.\s+", line):
+                clean = _re.sub(r"^[-*•\d.]+\s+", "", line)
+                story.append(Paragraph("• " + _md_to_rl(clean), bullet_style))
+            else:
+                story.append(Paragraph(_md_to_rl(line), body))
         story.append(Spacer(1, 14))
 
     # ── At-Risk Students Table (colour-coded grades) ──
@@ -328,7 +374,7 @@ def generate_pdf(df: pd.DataFrame, kpis: dict, insights: str, exam_label: str, m
     story.append(ft)
 
     def _make_canvas(*args, **kwargs):
-        return _FooterCanvas(*args, report_title=f"AI Student Intelligence Dashboard · {exam_label}", **kwargs)
+        return _FooterCanvas(*args, report_title=f"Studora Dashboard · {exam_label}", **kwargs)
 
     doc.build(story, canvasmaker=_make_canvas)
     buffer.seek(0)

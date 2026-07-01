@@ -13,7 +13,7 @@ try:
 except ImportError:
     GRADE_COLORS = {}
 
-APP_TITLE = "Student Intelligence Portal"
+APP_TITLE = "Studora"
 APP_ICON  = "🎓"
 
 # Chart palette — warm orange / amber / terracotta theme

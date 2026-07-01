@@ -140,7 +140,8 @@ def chart_top_n_students(df, n=10):
         text="Total_Marks",
         hover_data=["Percentage", "Grade"],
     )
-    fig.update_yaxes(categoryorder="total ascending")
+    fig.update_yaxes(categoryorder="total ascending", title_text="")   # hide "Student_Name" axis label
+    fig.update_xaxes(title_text="Total Marks")
     fig.update_coloraxes(showscale=False)
     fig.update_traces(
         textfont_color="#fff",
@@ -148,7 +149,14 @@ def chart_top_n_students(df, n=10):
         marker_line_color="rgba(255,255,255,0.1)",
         marker_line_width=1,
     )
-    return chart_defaults(fig, height=max(280, n * 30))
+    # Estimate the longest name to set a sensible left margin so names never
+    # overlap the bars. 7px per character is a safe approximation for size-12
+    # Inter font. Cap at 220px to avoid eating too much space on wide charts.
+    max_name_len = max((len(str(n)) for n in top["Student_Name"]), default=10)
+    left_margin = min(220, max(110, max_name_len * 7))
+    result = chart_defaults(fig, height=max(280, n * 34))
+    result.update_layout(margin=dict(l=left_margin, r=20, t=48, b=40))
+    return result
 
 
 def chart_scatter_percentile(df):

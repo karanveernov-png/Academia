@@ -59,19 +59,14 @@ def render_exam_tab(df_raw: pd.DataFrame, label: str, xai_key: str, top_n: int, 
         f'<span class="section-header-count">{subject_label}</span></div>',
         unsafe_allow_html=True
     )
-    c1,c2,c3,c4,c5,c6,c7 = st.columns(7)
-    c1.markdown(kpi_card("👥", kpis["total"],           "Total Students",  variant="sky"),   unsafe_allow_html=True)
-    c2.markdown(kpi_card("📈", f"{kpis['avg_pct']}%",   "Avg Score",       variant=""),      unsafe_allow_html=True)
-    c3.markdown(kpi_card("✅", f"{kpis['pass_rate']}%", "Pass Rate",       variant="green"), unsafe_allow_html=True)
-    c4.markdown(kpi_card("🏆", kpis["top_name"],        "Top Scorer",
+    c1, c2, c3 = st.columns(3)
+    c1.markdown(kpi_card("🏆", kpis["top_name"],        "Topper",
                           str(kpis["top_marks"])+" marks",                  variant="gold"),  unsafe_allow_html=True)
-    c5.markdown(kpi_card("⚠️", kpis["at_risk_n"],       "At‑Risk",          variant="amber"), unsafe_allow_html=True)
-    c6.markdown(kpi_card("🚫", kpis["detained_n"],      "Detained",        variant="red"),   unsafe_allow_html=True)
-    c7.markdown(kpi_card("📉", kpis["bot_name"],        "Lowest Scorer",
-                          str(kpis["bot_marks"])+" marks",                  variant="pink"),  unsafe_allow_html=True)
+    c2.markdown(kpi_card("📈", f"{kpis['avg_pct']}%",   "Avg Score",       variant=""),      unsafe_allow_html=True)
+    c3.markdown(kpi_card("⚠️", kpis["at_risk_n"],       "At‑Risk",          variant="amber"), unsafe_allow_html=True)
 
     # ══════════ AI COMMAND BAR ══════════
-    st.markdown('<div class="section-header">💬 AI Command Bar</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-header">🤖 Studora AI — Command Bar</div>', unsafe_allow_html=True)
     render_html("""
     <div class="cmd-bar-wrap">
         <div class="cmd-hint">

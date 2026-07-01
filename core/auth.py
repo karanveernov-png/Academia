@@ -116,7 +116,7 @@ def inject_login_css() -> None:
 # Login page UI
 # ──────────────────────────────────────────────────────────────────────────
 def render_login_page() -> None:
-    st.title("🎓 Portal Login")
+    st.title("🎓 Studora Login Portal")
 
     with st.container():
         st.markdown("### Welcome Back! Please select your role.")
@@ -126,10 +126,10 @@ def render_login_page() -> None:
         # ── Student login ───────────────────────────────────────────────
         with student_tab:
             with st.form("student_form"):
-                st.write("Sign in to your student account")
+                st.write("Sign in to your Studora student account")
                 s_username = st.text_input("Student ID", placeholder="Enter your student ID")
                 s_password = st.text_input("Password", type="password", placeholder="Enter your password")
-                s_submit = st.form_submit_button("Student Login")
+                s_submit = st.form_submit_button("Login →")
 
                 if s_submit:
                     if s_username == "student" and s_password == "1234":
@@ -143,10 +143,10 @@ def render_login_page() -> None:
         # ── Admin login ──────────────────────────────────────────────────
         with admin_tab:
             with st.form("admin_form"):
-                st.write("Sign in to the administrative portal")
+                st.write("Sign in to the Studora admin dashboard")
                 a_username = st.text_input("Admin Username", placeholder="Enter admin username")
                 a_password = st.text_input("Password", type="password", placeholder="Enter admin password")
-                a_submit = st.form_submit_button("Admin Login")
+                a_submit = st.form_submit_button("Login →")
 
                 if a_submit:
                     if a_username == "admin" and a_password == "admin123":

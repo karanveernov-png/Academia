@@ -23,6 +23,35 @@ the source code.
 import os
 import streamlit as st
 
+# Invisible / zero-width characters that sometimes ride along when an API
+# key is copy-pasted (from a browser, PDF, Notion, WhatsApp, etc.). They're
+# invisible on screen but break HTTP header encoding, causing errors like
+# "'ascii' codec can't encode character '\u200b' ... ordinal not in range(128)".
+_INVISIBLE_CHARS = (
+    "\u200b"  # zero-width space
+    "\u200c"  # zero-width non-joiner
+    "\u200d"  # zero-width joiner
+    "\u2060"  # word joiner
+    "\ufeff"  # byte-order mark
+    "\u00a0"  # non-breaking space
+    "\u202a\u202b\u202c\u202d\u202e"  # bidi control chars
+)
+
+
+def _sanitize_key(raw: str) -> str:
+    """Strip whitespace and any invisible/non-ASCII characters from an API
+    key. A real Groq key is always plain printable ASCII, so anything
+    outside that range is junk that snuck in during copy-paste and would
+    otherwise crash the HTTP client when it tries to send it as a header."""
+    if not raw:
+        return ""
+    cleaned = str(raw).strip()
+    for ch in _INVISIBLE_CHARS:
+        cleaned = cleaned.replace(ch, "")
+    # Keep only printable ASCII (32-126) — drop anything else silently.
+    cleaned = "".join(c for c in cleaned if 32 < ord(c) < 127)
+    return cleaned.strip()
+
 
 def resolve_api_key(user_input: str = "") -> str:
     """Return the Groq API key to use for this request.
@@ -31,18 +60,18 @@ def resolve_api_key(user_input: str = "") -> str:
     if they left it blank). A non-empty user_input always wins.
     """
     if user_input and user_input.strip():
-        return user_input.strip()
+        return _sanitize_key(user_input)
 
     try:
         secret_key = st.secrets.get("GROQ_API_KEY", "")
         if secret_key:
-            return str(secret_key).strip()
+            return _sanitize_key(secret_key)
     except Exception:
         pass
 
     env_key = os.environ.get("GROQ_API_KEY", "")
     if env_key:
-        return env_key.strip()
+        return _sanitize_key(env_key)
 
     return ""
 

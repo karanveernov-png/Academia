@@ -46,7 +46,7 @@ def render_cross_exam_tab(exam_results: dict, xai_key: str):
             st.dataframe(both_detained[show_cols], use_container_width=True)
 
     # ── AI Command Bar — now spans multiple exams ──────────────────────────
-    st.markdown('<div class="section-header">💬 Ask Across Exams — AI Command Bar</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-header">🤖 Studora AI — Ask Across Exams</div>', unsafe_allow_html=True)
     render_html("""
     <div class="cmd-bar-wrap">
         <div class="cmd-hint">

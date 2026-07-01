@@ -8,6 +8,7 @@ and the executor that turns a parsed command into a chart/table/text.
 """
 import json
 import re as _re
+import difflib
 import textwrap
 import pandas as pd
 import numpy as np
@@ -16,6 +17,49 @@ from groq import Groq
 
 from core.data_loader import prepare_data
 from core.charts import chart_grade_pie, chart_top_n_students, chart_score_distribution
+
+
+def _resolve_name(candidate: str, student_names: list, cutoff: float = 0.72):
+    """
+    Resolve a (possibly mistyped) name against the real roster. Tries, in
+    order: exact match, substring match (either direction), then a
+    typo-tolerant fuzzy match that forgives a missing/extra/swapped letter
+    (e.g. 'Babta' / 'Shyana' / 'Babitaa' still resolve correctly).
+    Returns the matched name, or None if nothing is close enough.
+    """
+    if not candidate or not student_names:
+        return None
+    cand = candidate.strip().lower()
+    if not cand:
+        return None
+    for n in student_names:
+        if n.lower() == cand:
+            return n
+    for n in student_names:
+        if cand in n.lower() or n.lower() in cand:
+            return n
+    close = difflib.get_close_matches(cand, [n.lower() for n in student_names], n=1, cutoff=cutoff)
+    if close:
+        lower_names = [n.lower() for n in student_names]
+        return student_names[lower_names.index(close[0])]
+    return None
+
+
+def _suggest_names(candidate: str, student_names: list, limit: int = 15) -> list:
+    """
+    Return up to `limit` student names most similar to `candidate`, used to
+    give a friendly "did you mean…" list when no confident match is found.
+    The count is dynamic — only names that are actually somewhat close are
+    included, capped at `limit`, so a wildly off typo won't dump the entire
+    class roster.
+    """
+    if not candidate or not student_names:
+        return []
+    cand = candidate.strip().lower()
+    scored = [(n, difflib.SequenceMatcher(None, cand, n.lower()).ratio()) for n in student_names]
+    scored = [s for s in scored if s[1] >= 0.4]
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return [n for n, _ in scored[:limit]]
 
 
 def _build_student_profile_text(student_name: str, view_df: pd.DataFrame,
@@ -33,6 +77,9 @@ def _build_student_profile_text(student_name: str, view_df: pd.DataFrame,
 
     match = _find_student(view_df, student_name)
     if match.empty:
+        suggestions = _suggest_names(student_name, view_df["Student_Name"].dropna().astype(str).tolist())
+        if suggestions:
+            return "error", f"Couldn't find a student matching '{student_name}'. Did you mean: {', '.join(suggestions)}?"
         return "error", f"Couldn't find a student matching '{student_name}'."
 
     row = match.iloc[0]
@@ -162,6 +209,185 @@ def _build_student_profile_text(student_name: str, view_df: pd.DataFrame,
     return "text", "\n".join(l for l in lines if l is not None)
 
 
+def _build_rank_target_text(student_name: str, target_rank: int, view_df: pd.DataFrame,
+                              mapping: dict, detain_threshold: float) -> tuple:
+    """
+    Build a teacher-ready answer for "what does X need to do to reach rank N"
+    style questions — shows the exact marks gap to the student currently
+    holding that rank, plus weak-subject tips, all via plain pandas (no API
+    call). Returns (kind, payload).
+    """
+    if "Student_Name" not in view_df.columns:
+        return "error", "No student name column found."
+
+    total_students = len(view_df)
+    if target_rank < 1 or target_rank > total_students:
+        return "error", f"Rank {target_rank} doesn't exist — this exam only has {total_students} students."
+
+    ranked = view_df.sort_values("Percentage", ascending=False).reset_index(drop=True)
+    match_idx = ranked.index[ranked["Student_Name"].astype(str).str.lower() == student_name.lower()]
+    if len(match_idx) == 0:
+        return "error", f"Couldn't find a student matching '{student_name}'."
+
+    row = ranked.iloc[match_idx[0]]
+    current_rank = int(match_idx[0]) + 1
+    name  = row.get("Student_Name", "N/A")
+    total = row.get("Total_Marks", 0)
+    pct   = row.get("Percentage", 0)
+
+    if current_rank <= target_rank:
+        return "text", (
+            f"🎉 **{name}** is already at **Rank #{current_rank}**, which is at or ahead of the "
+            f"target Rank #{target_rank}! Total Marks: **{total}** ({pct}%)."
+        )
+
+    target_row = ranked.iloc[target_rank - 1]
+    target_name = target_row.get("Student_Name", "N/A")
+    gap = round(float(target_row.get("Total_Marks", 0)) - float(total), 2)
+
+    lines = [
+        f"## 🎯 {name} — Path to Rank #{target_rank}",
+        "",
+        "| Metric | Value |",
+        "|--------|-------|",
+        f"| 🏅 Current Rank | **#{current_rank} of {total_students}** |",
+        f"| 📝 Current Marks | **{total}** ({pct}%) |",
+        f"| 🚀 Marks Needed | **+{gap:.1f}** to overtake **{target_name}** (currently #{target_rank}) |",
+    ]
+
+    subject_cols = [c for c in (mapping.get("marks") or []) if c in view_df.columns]
+    class_avgs   = {c: round(view_df[c].mean(), 2) for c in subject_cols}
+    student_marks = {c: row.get(c) for c in subject_cols if pd.notna(row.get(c))}
+
+    weak = []
+    for c in subject_cols:
+        sm = student_marks.get(c)
+        ca = class_avgs.get(c, 0)
+        if sm is None:
+            continue
+        diff = round(float(sm) - ca, 2)
+        if diff < 0:
+            weak.append((c, float(sm), ca, diff))
+    weak.sort(key=lambda x: x[3])
+
+    if weak:
+        lines += ["", "### 🎯 Focus Areas", ""]
+        for i, (subj, sm, ca, diff) in enumerate(weak[:3], 1):
+            tip = _subject_tip(subj)
+            lines.append(
+                f"{i}. **{subj}** — scored {sm:.1f} vs class avg {ca:.1f} (gap: {diff:.1f}). 💡 {tip}"
+            )
+    else:
+        lines += ["", f"✅ Already at or above class average in every subject — focus extra "
+                       f"**+{gap:.1f} marks** on the strongest subject to close the gap fastest."]
+
+    return "text", "\n".join(lines)
+
+
+def _build_compare_text(name1: str, name2: str, view_df: pd.DataFrame, mapping: dict) -> tuple:
+    """
+    Build a rich, teacher-ready head-to-head comparison between two students.
+    Covers: rank, percentile, marks, grade, risk, detained, subject breakdown,
+    a subject-level performance gap bar, and a clear overall verdict.
+    Returns (kind, payload).
+    """
+    if "Student_Name" not in view_df.columns:
+        return "error", "No student name column found."
+
+    row1_df = view_df[view_df["Student_Name"] == name1]
+    row2_df = view_df[view_df["Student_Name"] == name2]
+    if row1_df.empty or row2_df.empty:
+        missing = name1 if row1_df.empty else name2
+        return "error", f"Couldn't find a student matching '{missing}'."
+
+    row1, row2 = row1_df.iloc[0], row2_df.iloc[0]
+    total_students = len(view_df)
+    ranked = view_df.sort_values("Percentage", ascending=False).reset_index(drop=True)
+    rank1 = int(ranked[ranked["Student_Name"] == name1].index[0]) + 1
+    rank2 = int(ranked[ranked["Student_Name"] == name2].index[0]) + 1
+    pct1  = round(float(row1.get("Percentage", 0)), 2)
+    pct2  = round(float(row2.get("Percentage", 0)), 2)
+    tot1  = float(row1.get("Total_Marks", 0))
+    tot2  = float(row2.get("Total_Marks", 0))
+
+    # Percentile = % of class scoring below this student
+    pctile1 = round((total_students - rank1) / max(total_students - 1, 1) * 100, 1)
+    pctile2 = round((total_students - rank2) / max(total_students - 1, 1) * 100, 1)
+
+    def w(v1, v2, higher_is_better=True):
+        try:
+            f1, f2 = float(v1), float(v2)
+        except (TypeError, ValueError):
+            return "", ""
+        if f1 == f2:
+            return "🤝 ", "🤝 "
+        return ("🏆 ", "") if (f1 > f2) == higher_is_better else ("", "🏆 ")
+
+    w1r, w2r = w(rank1, rank2, higher_is_better=False)
+    w1t, w2t = w(tot1, tot2)
+    w1p, w2p = w(pct1, pct2)
+
+    lines = [
+        f"## ⚖️ Head-to-Head: {name1} vs {name2}",
+        "",
+        f"| Metric | {name1} | {name2} |",
+        "|---|---|---|",
+        f"| 🏅 Class Rank | {w1r}**#{rank1}** of {total_students} | {w2r}**#{rank2}** of {total_students} |",
+        f"| 📈 Percentile | {w1r}**{pctile1}th** | {w2r}**{pctile2}th** |",
+        f"| 📝 Total Marks | {w1t}**{tot1:.0f}** | {w2t}**{tot2:.0f}** |",
+        f"| 📊 Percentage | {w1p}**{pct1}%** | {w2p}**{pct2}%** |",
+        f"| 🎓 Grade | **{row1.get('Grade','N/A')}** | **{row2.get('Grade','N/A')}** |",
+        f"| ⚠️ Risk | **{row1.get('Risk','N/A')}** | **{row2.get('Risk','N/A')}** |",
+        f"| 🚫 Detained | {'Yes' if row1.get('Detained') else 'No'} | {'Yes' if row2.get('Detained') else 'No'} |",
+    ]
+
+    # Subject-wise breakdown with a visual ascii gap bar
+    subject_cols = [c for c in (mapping.get("marks") or []) if c in view_df.columns]
+    valid_subjects = [c for c in subject_cols if pd.notna(row1.get(c)) and pd.notna(row2.get(c))]
+    if valid_subjects:
+        lines += ["", "### 📚 Subject Breakdown", ""]
+        lines.append(f"| Subject | {name1} | {name2} | Winner |")
+        lines.append("|---|---|---|---|")
+        s1_wins, s2_wins, ties = 0, 0, 0
+        for c in valid_subjects:
+            v1, v2 = float(row1.get(c, 0)), float(row2.get(c, 0))
+            class_avg = round(view_df[c].mean(), 1)
+            if v1 > v2:
+                winner = f"🏆 {name1.split()[0]}"
+                s1_wins += 1
+            elif v2 > v1:
+                winner = f"🏆 {name2.split()[0]}"
+                s2_wins += 1
+            else:
+                winner = "🤝 Tie"
+                ties += 1
+            lines.append(f"| {c} | **{v1:.0f}** _(avg {class_avg})_ | **{v2:.0f}** _(avg {class_avg})_ | {winner} |")
+
+        lines += [
+            "",
+            f"**Subject wins →** {name1.split()[0]}: {s1_wins} &nbsp;|&nbsp; "
+            f"{name2.split()[0]}: {s2_wins} &nbsp;|&nbsp; Ties: {ties}",
+        ]
+
+    # Overall verdict
+    gap = round(abs(tot1 - tot2), 1)
+    lines.append("")
+    if gap == 0:
+        lines.append(f"### 🤝 Verdict: **{name1}** and **{name2}** are perfectly tied — {tot1:.0f} marks each.")
+    else:
+        leader = name1 if tot1 > tot2 else name2
+        trailer = name2 if tot1 > tot2 else name1
+        trailer_pct = pct2 if tot1 > tot2 else pct1
+        trailer_rank = rank2 if tot1 > tot2 else rank1
+        lines.append(
+            f"### 🏆 Verdict: **{leader}** leads by **{gap} marks** overall.\n"
+            f"> {trailer} needs **+{gap:.0f} marks** to catch up "
+            f"(currently Rank #{trailer_rank}, {trailer_pct}%)."
+        )
+
+    return "text", "\n".join(lines)
+
+
 def _subject_tip(subject_name: str) -> str:
     """Return a generic but contextual study tip based on the subject name."""
     s = subject_name.lower()
@@ -209,20 +435,123 @@ def _single_exam_local_shortcut(query: str, df_raw: pd.DataFrame,
         name = top_row.get("Student_Name", "N/A")
         return _build_student_profile_text(name, view_df, mapping, detain_threshold, include_tips=False)
 
+    # ── Compare two students ──────────────────────────────────────────────
+    # Covers: "compare X and Y", "X vs Y", "X vs. Y", "X against Y",
+    # "difference between X and Y", "who is better X or Y", "X or Y who is better"
+    _compare_patterns = [
+        r"\bcompare\s+([a-z][a-z\s.]{1,30})\s+(?:and|vs\.?|with|against)\s+([a-z][a-z\s.]{1,30})",
+        r"\bdifference\s+between\s+([a-z][a-z\s.]{1,30})\s+and\s+([a-z][a-z\s.]{1,30})",
+        r"\bwho\s+is\s+better\s+([a-z][a-z\s.]{1,30})\s+or\s+([a-z][a-z\s.]{1,30})",
+        r"([a-z][a-z\s.]{1,30})\s+or\s+([a-z][a-z\s.]{1,30})\s+who\s+is\s+better",
+        r"([a-z][a-z\s.]{1,20})\s+vs\.?\s+([a-z][a-z\s.]{1,20})",
+        r"([a-z][a-z\s.]{1,20})\s+against\s+([a-z][a-z\s.]{1,20})",
+    ]
+    student_names_list = view_df["Student_Name"].dropna().astype(str).tolist() if "Student_Name" in view_df.columns else []
+
+    for _cpat in _compare_patterns:
+        compare_m = _re.search(_cpat, q)
+        if compare_m:
+            n1_raw = compare_m.group(1).strip().title()
+            n2_raw = compare_m.group(2).strip().title()
+            # Verify at least one name is a real student before treating this
+            # as a compare (avoids false positives like "A vs B" on other queries)
+            r1 = _resolve_name(n1_raw, student_names_list)
+            r2 = _resolve_name(n2_raw, student_names_list)
+            if r1 or r2:  # at least one matched — treat as compare intent
+                if not r1:
+                    suggestions = _suggest_names(n1_raw, student_names_list, limit=15)
+                    msg = f"Couldn't find **'{n1_raw}'**."
+                    if suggestions:
+                        msg += f"\n\nDid you mean: {', '.join(suggestions[:8])}?"
+                    return "error", msg
+                if not r2:
+                    suggestions = _suggest_names(n2_raw, student_names_list, limit=15)
+                    msg = f"Couldn't find **'{n2_raw}'**."
+                    if suggestions:
+                        msg += f"\n\nDid you mean: {', '.join(suggestions[:8])}?"
+                    return "error", msg
+                return _build_compare_text(r1, r2, view_df, mapping)
+            break  # pattern matched but neither name found → fall through to AI
+
     # ── "lowest scorer" / "who failed most" ──
     if _re.search(r"\b(lowest\s+scorer|worst\s+student|bottom\s+student|who\s+failed|least\s+marks)\b", q):
         bot_row = view_df.loc[view_df["Percentage"].idxmin()]
         name = bot_row.get("Student_Name", "N/A")
         return _build_student_profile_text(name, view_df, mapping, detain_threshold, include_tips=True)
 
+    # ── "what does/should <name> need to do to reach/get rank N" / "how does
+    # <name> rank up to top N" / and similar "advice toward a target rank"
+    # phrasings. Handled BEFORE the generic patterns below because otherwise
+    # this kind of sentence gets mis-parsed as a plain "sort by rank" command
+    # and dumps the full class table instead of answering the actual question.
+    target_rank_m = _re.search(r"(?:rank\s*#?\s*|top\s*-?\s*)(\d+)\b", q)
+    has_goal_words = bool(_re.search(
+        r"\b(need|needs|do|does|should|reach|achieve|become|get|climb|improve|up|tips|advice|plan)\b", q))
+    no_chart_words = not _re.search(r"\b(chart|graph|plot|visuali[sz]e|histogram|pie)\b", q)
+
+    if target_rank_m and has_goal_words and no_chart_words:
+        target_rank = int(target_rank_m.group(1))
+        student_names = view_df["Student_Name"].dropna().tolist() if "Student_Name" in view_df.columns else []
+
+        # 1) Look for any *real* student's full name mentioned anywhere in the
+        #    query (longest names first, so "Anish Kumar" wins over a partial
+        #    first-name-only collision).
+        found_name = None
+        for n in sorted(student_names, key=len, reverse=True):
+            if _re.search(r"\b" + _re.escape(n.lower()) + r"\b", q):
+                found_name = n
+                break
+        if not found_name:
+            for n in student_names:
+                first_tok = n.lower().split()[0]
+                if len(first_tok) >= 3 and _re.search(r"\b" + _re.escape(first_tok) + r"\b", q):
+                    found_name = n
+                    break
+        if not found_name:
+            # 1b) typo-tolerant fuzzy pass over individual query words/word
+            #     pairs (catches a missing/extra/swapped letter, e.g. typing
+            #     "Babta" or "Shyana" instead of "Babita" / "Shayana").
+            q_tokens = _re.findall(r"[a-z]+", q)
+            candidate_tokens = [t for t in q_tokens if len(t) >= 3] + \
+                                [f"{a} {b}" for a, b in zip(q_tokens, q_tokens[1:])]
+            best, best_score = None, 0.0
+            for tok in candidate_tokens:
+                for n in student_names:
+                    score = difflib.SequenceMatcher(None, tok, n.lower()).ratio()
+                    if score > best_score:
+                        best_score, best = score, n
+            if best and best_score >= 0.75:
+                found_name = best
+
+        if found_name:
+            return _build_rank_target_text(found_name, target_rank, view_df, mapping, detain_threshold)
+
+        # 2) No real student matched — if the sentence clearly *names*
+        #    someone (even if that person isn't an actual student in this
+        #    exam), say so explicitly instead of silently falling through to
+        #    a generic/irrelevant table.
+        name_guess_m = _re.search(
+            r"(?:what|how)\s+(?:does|do|should|can|would)?\s*([a-z]+(?:\s+[a-z]+){0,2}?)\s+"
+            r"(?:needs?|do|does|get|reach|achieve|become|rank|climb|improve)\b", q
+        )
+        if name_guess_m:
+            guess = name_guess_m.group(1).strip().title()
+            if guess.lower() not in ("i", "you", "we", "they", "the", "a", "an", "my", "me", "he", "she"):
+                suggestions = _suggest_names(guess, student_names)
+                if suggestions:
+                    return "error", (f"Couldn't find a student named '{guess}' in this exam's data. "
+                                      f"Did you mean: {', '.join(suggestions)}?")
+                return "error", (f"Couldn't find a student named '{guess}' in this exam's data. "
+                                  f"Double-check the spelling, or try their full name as it appears in the sheet.")
+
     # ── Student-specific queries: rank / tips / profile / improvement ──
     patterns = [
         r"(?:rank\s+of|rank\s+for)\s+([a-z][a-z\s.]{1,30})",
         r"([a-z][a-z\s.]{1,30})[''`]?s\s+rank",
-        r"(?:tips\s+for|improve|improvement\s+for|how\s+(?:can|should|to\s+help)\s+)([a-z][a-z\s.]{1,30})",
-        r"(?:profile\s+of|show\s+me|tell\s+me\s+about|details\s+of|info(?:rmation)?\s+(?:on|about)\s+)([a-z][a-z\s.]{1,30})",
+        r"(?:tips\s+for|improve(?:ment)?(?:\s+for)?|how\s+(?:can|should|to\s+help))\s+([a-z][a-z\s.]{1,30})",
+        r"(?:profile\s+of|show\s+me|tell\s+me\s+about|details\s+of|info(?:rmation)?\s+(?:on|about))\s+([a-z][a-z\s.]{1,30})",
         r"(?:what\s+(?:is|are|should|can)\s+)([a-z][a-z\s.]{1,30})\s+(?:do|doing|score|rank|marks|percentage|grade)",
-        r"([a-z][a-z\s.]{1,30})\s+(?:rank|score|percentage|marks|grade|tips|improvement)",
+        r"([a-z]+(?:\s+[a-z]+){0,2})\s+(?:rank|score|percentage|marks|grade|tips|improvement)",
     ]
     include_tips = bool(_re.search(r"\b(tip|tips|improve|improvement|help|advice|suggest|plan|weak|weak areas?)\b", q))
 
@@ -301,7 +630,7 @@ def _local_fallback_parser(query: str, subjects: list) -> dict:
         cmd["filters"]["class"] = m.group(1).upper()
 
     # compare X and Y
-    m = _re.search(r" compare\s+([a-z0-9][a-z0-9 .]{1,25})\s+(?:and|vs\.?|with)\s+([a-z0-9][a-z0-9 .]{1,25})", q)
+    m = _re.search(r"\bcompare\s+([a-z0-9][a-z0-9 .]{1,25})\s+(?:and|vs\.?|with)\s+([a-z0-9][a-z0-9 .]{1,25})", q)
     if m:
         cmd["intent"] = "compare"
         cmd["filters"]["compare_names"] = [m.group(1).strip().title(), m.group(2).strip().title()]
@@ -486,13 +815,14 @@ def _apply_filters(view_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
 
 
 def _find_student(view_df: pd.DataFrame, name: str):
-    """Fuzzy (case-insensitive, partial) lookup of a student by name."""
+    """Typo-tolerant lookup of a student by name (exact -> substring -> fuzzy)."""
     if not name or "Student_Name" not in view_df.columns:
         return view_df.iloc[0:0]
-    exact = view_df[view_df["Student_Name"].astype(str).str.lower() == name.lower()]
-    if not exact.empty:
-        return exact
-    return view_df[view_df["Student_Name"].astype(str).str.lower().str.contains(name.lower(), na=False)]
+    student_names = view_df["Student_Name"].dropna().astype(str).tolist()
+    resolved = _resolve_name(name, student_names)
+    if resolved is None:
+        return view_df.iloc[0:0]
+    return view_df[view_df["Student_Name"].astype(str) == resolved]
 
 
 def execute_command(cmd: dict, df_raw: pd.DataFrame, mapping: dict, detain_threshold: float):
@@ -520,22 +850,29 @@ def execute_command(cmd: dict, df_raw: pd.DataFrame, mapping: dict, detain_thres
         names = filters.get("compare_names") or []
         if len(names) < 2:
             return "error", "Tell me two student names to compare, e.g. \"compare Ravi and Sita\"."
-        rows = []
-        for nm in names:
-            match = _find_student(view_df, nm)
-            if match.empty:
+        student_names = view_df["Student_Name"].dropna().astype(str).tolist() if "Student_Name" in view_df.columns else []
+        resolved_names = []
+        for nm in names[:2]:
+            resolved = _resolve_name(nm, student_names)
+            if not resolved:
+                suggestions = _suggest_names(nm, student_names)
+                if suggestions:
+                    return "error", f"Couldn't find a student matching '{nm}'. Did you mean: {', '.join(suggestions)}?"
                 return "error", f"Couldn't find a student matching '{nm}'."
-            rows.append(match.iloc[0])
-        cols = [c for c in ["Student_Name", "Student_ID", "Class", "Total_Marks", "Percentage", "Grade", "Detained"] if c in view_df.columns]
-        cmp_df = pd.DataFrame([r[cols] for r in rows])
-        return "table", cmp_df.reset_index(drop=True)
+            resolved_names.append(resolved)
+        return _build_compare_text(resolved_names[0], resolved_names[1], view_df, mapping)
 
     # ── LOOKUP intent: a single named student ──────────────────────────
     if intent == "lookup":
         nm = filters.get("student_name")
-        match = _find_student(view_df, nm)
-        if match.empty:
+        student_names = view_df["Student_Name"].dropna().astype(str).tolist() if "Student_Name" in view_df.columns else []
+        resolved = _resolve_name(nm, student_names) if nm else None
+        if not resolved:
+            suggestions = _suggest_names(nm or "", student_names)
+            if suggestions:
+                return "error", f"Couldn't find a student matching '{nm or ''}'. Did you mean: {', '.join(suggestions)}?"
             return "error", f"Couldn't find a student matching '{nm or ''}'."
+        match = view_df[view_df["Student_Name"] == resolved]
         row = match.iloc[0]
         detained_txt = "Yes 🚫" if row.get("Detained") else "No ✅"
         return "text", (

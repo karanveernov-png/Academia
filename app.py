@@ -28,7 +28,7 @@ init_auth_state()
 if is_logged_in():
     configure_page(layout="wide", sidebar_state="collapsed")
 else:
-    configure_page(page_title="Portal Login", layout="centered", sidebar_state="collapsed")
+    configure_page(page_title="Studora Login Portal", layout="centered", sidebar_state="collapsed")
 
 # ── Gate: show login until authenticated ───────────────────────────────
 if not is_logged_in():
@@ -607,7 +607,7 @@ def _section_page_header(icon, title, subtitle):
 def _version_footer():
     st.markdown(
         '<div style="font-size:0.65rem;color:#44403c;text-align:center;">'
-        'Student Intelligence Portal v4.0<br>'
+        'Studora Dashboard v4.0<br>'
         '<span style="color:#292524;">Streamlit · Groq · Plotly</span></div>',
         unsafe_allow_html=True
     )
